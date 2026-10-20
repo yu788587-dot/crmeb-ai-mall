@@ -1,0 +1,13 @@
+# 依赖与本地运行产物
+/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+
+# 真实密钥绝不入库（.env.example 才是模板）
+.env
+
+# 运行时数据：向量库持久化目录、导出文件
+/data/
+/logs/

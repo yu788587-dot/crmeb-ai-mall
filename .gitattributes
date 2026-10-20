@@ -12,6 +12,7 @@
 
 help/**            text eol=lf
 docs/**            text eol=lf
+ai-service/**      text eol=lf
 
 # 上游安装模板原为「仅 CR」换行，parse_ini_file 解析不出来（详见 docs 第 10.4 节），此处强制 LF
 crmeb/public/install/.env  text eol=lf
