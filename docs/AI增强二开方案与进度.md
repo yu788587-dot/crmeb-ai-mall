@@ -65,7 +65,7 @@ Grafana ◀── Prometheus ◀── ai-service:/metrics ＋ PHP指标exporter
 | 窗口 | 内容 | 验收 |
 |---|---|---|
 | 1 环境与基线 | git init 两段提交 → 启动 Docker → compose 全栈（nginx:8011/mysql:33061/redis:63791）→ 安装 CRMEB → admin/H5 登录 → 基线聊天可用 → **预验证 admin 前端构建链（便携 Node 20）** → 集成机制细节确认 → AI 关闭时原版行为基线 | ✅ 完成，见第十节（含 9p 性能悬崖修复 60s→10ms、E2E 聊天与自动回复基线、admin 构建链与产物 96.6% 字节一致，见 10.7） |
-| 2 AI 微服务 | FastAPI + RAG + 知识库同步 + **trace_id 契约 / 结构化日志 / /metrics / health** | pytest 全绿 + 真实 API 冒烟 |
+| 2 AI 微服务 | FastAPI + RAG + 知识库同步 + **trace_id 契约 / 结构化日志 / /metrics / health** | ✅ 代码已提交 f665fcb7，pytest 28 passed，fake 冒烟通过；真实 API 冒烟移至窗口 3（需用户填 key） |
 | 3 集成与可靠性 | ChatHandle 挂接 + AI Worker + 七项可靠性标准 + 后台开关 | 链路跑通 + 初步故障注入 |
 | 4 可观测与量化 | ai_call_log + 后台监控页 + Prometheus/Grafana + exporter + locust 压测 + 故障演练 | 数字、图表与截图产出 |
 | 5 后台 AI 文案 | adminapi 接口 + admin 前端按钮 + 构建（轻量，工期紧可砍） | 生成并应用文案 |
@@ -189,4 +189,100 @@ NODE_OPTIONS=--openssl-legacy-provider npx vue-cli-service build --mode=producti
 | `help/dev/chat-e2e.mjs`（新） | 双端 WebSocket 聊天 E2E 脚本，窗口 3/4 复用 |
 | `.gitattributes`（新） | 强制 `*.sh/*.mjs/*.ini/*.yml` 与安装模板为 LF，防止 Windows 检出又变回 CRLF |
 | `crmeb/public/install/.env`（改） | CR 换行 → LF，`parse_ini_file` 才能解析；容器内实测替换后 7 个 section 正常读出 |
+
+## 十一、窗口 2 执行记录（代码已提交 f665fcb7）
+
+### 11.1 ai-service 目录结构与职责
+
+```
+ai-service/
+├── .env.example          # 配置模板（复制为 .env 后填 key）
+├── requirements.txt      # fastapi/httpx/chromadb/prometheus-client/pymysql/numpy/pytest
+├── pytest.ini            # asyncio_mode=auto
+├── app/
+│   ├── config.py         # pydantic-settings，含 fake_fail_mode/fake_latency_ms 故障注入
+│   ├── trace.py          # X-Trace-Id contextvar + sanitize（防日志注入）
+│   ├── logging_setup.py  # JSON 结构化日志（ts/level/logger/trace_id/event + extra 字段）
+│   ├── metrics.py        # Prometheus 指标（HTTP/LLM/RAG/Breaker/Backpressure/Idempotency/KB）
+│   ├── resilience.py     # CircuitBreaker / RetryPolicy / Backpressure / ConversationSerializer / AIServiceError
+│   ├── llm.py            # ResilientLLM 包装器 + make_llm() 工厂
+│   ├── schemas.py        # ChatRequest/CopywritingRequest/Envelope/HealthResponse
+│   ├── routers.py        # /api/chat /copywriting /kb/sync /kb/stats /health
+│   ├── main.py           # FastAPI app + lifespan + trace 中间件 + 异常处理 + /metrics
+│   ├── _chroma_noop.py   # chromadb 遥测空实现（解决 posthog 7.x 签名不兼容 bug）
+│   ├── providers/
+│   │   ├── base.py       # LLMProvider Protocol + ChatMessage/ChatResult
+│   │   ├── fake.py       # 特征哈希 embedding + 故障注入（timeout/connect/5xx/4xx）
+│   │   └── siliconflow.py # httpx AsyncClient + 分层 Timeout + RetryPolicy
+│   ├── rag/
+│   │   ├── documents.py  # KBDocument 模型 + product/speechcraft/keyword_reply 构造器
+│   │   └── store.py      # Chroma PersistentClient（cosine 空间，asyncio.to_thread）
+│   ├── kb/
+│   │   ├── mysql_source.py # 只读 pymysql + SQL 白名单校验
+│   │   └── service.py    # KBSyncService：MySQL → embed → Chroma 批量同步
+│   └── services/
+│       ├── chat.py       # 完整流水线：幂等→串行→背压→deadline→RAG→LLM→置信度→降级
+│       └── copywriting.py # 后台文案生成（走同一套 breaker/backpressure/trace）
+└── tests/                # 28 passed
+    ├── conftest.py       # fake_settings + fake_llm + tmp chroma fixtures
+    ├── test_health.py    # /api/health + trace 回传 + /metrics
+    ├── test_chat.py      # KB 命中 / 无 KB / 幂等 / LLM 故障降级
+    ├── test_breaker.py   # closed→open→half_open→closed 状态机
+    ├── test_retry.py     # 只对 connect+5xx 重试，超时/4xx 绝不重试
+    ├── test_backpressure.py # 队列满拒绝 + 容量内放行 + 同会话串行
+    └── test_rag.py       # 特征哈希确定性 + store upsert/search
+```
+
+### 11.2 可靠性原语实现要点
+
+| 原语 | 关键设计 | 对应七项标准 |
+|---|---|---|
+| CircuitBreaker | asyncio.Lock 线程安全；half_open_in_flight 限制并发探测数；record_failure 区分「上游故障」和「业务降级」（后者不触发熔断） | 熔断 |
+| RetryPolicy | 只对 ConnectError/RemoteProtocolError 和 5xx 重试一次；ReadTimeout 和 4xx 直接上报 | 重试 |
+| Backpressure | Semaphore(max_inflight) + 等待计数(max_queue)；超出直接 OverloadedError(503)，不让请求堆积超时 | 背压 |
+| ConversationSerializer | OrderedDict + LRU 淘汰；同 uid 消息串行，避免并发读未落库上下文 | 同会话串行 |
+| Idempotency | dict[user_msg_id, (timestamp, ChatData)] + TTL + max_entries LRU | 幂等 |
+| TraceMiddleware | X-Trace-Id 头读取/生成 → contextvar → JSON 日志 + 响应头回传；sanitize 正则过滤非法字符 | trace_id 贯穿 |
+
+### 11.3 FakeProvider 的离线 RAG 为什么有意义
+
+fake provider 的 embedding 不是随机向量，而是**特征哈希**（feature hashing）：把文本按词/字切分后 hash 到固定维度，相同词面映射到相同维度并累加符号值，最后 L2 归一化。这意味着：
+
+- 「测试手机多少钱」和「测试手机 1999 元」的余弦相似度 > 「蓝牙耳机 59 元」
+- 离线状态下 RAG 检索仍然返回语义相关的 top-k，而不是噪声
+- 窗口 4 故障演练可以直接用 fake provider 模拟各种失败模式，不需要真实 API
+
+### 11.4 chromadb 遥测坑（已解决）
+
+chromadb 0.5.23 + posthog 7.x 有签名不兼容 bug：即使设 `anonymized_telemetry=False`，仍会触发 `capture() takes 1 positional argument but 3 were given` 警告。解决方案：自定义 `NoopProductTelemetry`（继承 ProductTelemetryClient + @override capture），通过 `chroma_product_telemetry_impl` 设置注入。详见 `app/_chroma_noop.py` 和 `app/rag/store.py` 注释。
+
+### 11.5 测试结果
+
+```
+28 passed, 1 warning in 4.65s
+```
+
+覆盖：health/trace/metrics/breaker/retry/backpressure/conversation-serializer/RAG-documents/RAG-store/chat-with-kb/chat-without-kb/chat-idempotent/chat-degraded/copywriting（间接通过 health）。
+
+### 11.6 冒烟验证（fake 模式）
+
+启动命令：`cd ai-service && .venv/Scripts/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000`
+
+| 端点 | 结果 |
+|---|---|
+| GET /api/health | 200，status=degraded（kb 为空），breaker=closed，config 完整 |
+| GET /metrics | 200，Prometheus text format，ai_http_requests_total/ai_llm_requests_total 等指标齐全 |
+| POST /api/chat | fake 模式下正常返回 reply（注：curl 需正确 JSON body，TestClient 已验证） |
+
+### 11.7 窗口 3 待办（下次会话起点）
+
+1. **PHP ChatHandle 挂接**：在 `chat()` 关键词自动回复之后插入 AI 调用（httpx → ai-service `/api/chat`）
+2. **AI Worker**：think-queue job 异步调用，结果经 ChannelService::send 推回 ws 40002
+3. **后台开关**：利用 `system_config_tab` + `system_config` 低代码新增 AI 配置分组（开关/超时/降级话术）
+4. **真实 API 冒烟**：**需用户把 SiliconFlow key 填入 `ai-service/.env`**（`SILICONFLOW_API_KEY=sk-xxx`，`LLM_PROVIDER=siliconflow`），然后 `POST /api/kb/sync` 灌入知识库，再跑 chat-e2e.mjs 验证三场景
+5. **E2E 三场景**：AI 正常回复 / 人工在线时 AI 不接管 / LLM 故障时降级兜底
+
+### 11.8 本窗口新增进仓库的文件
+
+共 35 个文件（不含 .env 和 __pycache__），详见 11.1 目录树。核心依赖：fastapi 0.115.6 / httpx 0.28.1 / chromadb 0.5.23 / prometheus-client 0.23.1 / PyMySQL 1.1.1 / numpy 2.2.1 / pytest 8.3.4。
 
