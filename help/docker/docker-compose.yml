@@ -53,8 +53,13 @@ services:
       - "40002:40002"
     working_dir: /var/www
     volumes:
-      - ../../crmeb:/var/www
-      - ../../crmeb/runtime:/var/www/runtime
+      # 【二开改动 · Windows/Docker Desktop 性能优化】
+      # 上游把源码 ../../crmeb 直接绑定挂载到 /var/www。在 Windows + WSL2 后端下这是 9p 挂载，
+      # 单次文件元数据操作约 200ms，一次框架请求要 stat 上千个文件，后台接口实测 60s+ 直接 504。
+      # 这里改为 WSL2 ext4 命名卷，代码由 help/docker/sync.sh 以 tar 流同步进容器（NTFS 读取很快），
+      # 同时挂入 php/conf.d/zz-dev.ini 关闭 9p 下代价极高的 open_basedir realpath 校验并开启 OPcache。
+      - crmeb_app:/var/www
+      - ./php/conf.d/zz-dev.ini:/usr/local/etc/php/conf.d/zz-dev.ini:ro
     networks:
       app_net:
         ipv4_address: 192.168.10.90
@@ -85,3 +90,8 @@ networks:
       driver: default
       config:
         - subnet: 192.168.10.0/24
+
+volumes:
+  # 应用代码卷：位于 Docker Desktop 的 WSL2 VM（ext4），避免 Windows 9p 挂载性能悬崖。
+  # 首次使用请执行 bash help/docker/sync.sh 将 ../../crmeb 同步进来。
+  crmeb_app:
