@@ -64,7 +64,7 @@ Grafana ◀── Prometheus ◀── ai-service:/metrics ＋ PHP指标exporter
 
 | 窗口 | 内容 | 验收 |
 |---|---|---|
-| 1 环境与基线 | git init 两段提交 → 启动 Docker → compose 全栈（nginx:8011/mysql:33061/redis:63791）→ 安装 CRMEB → admin/H5 登录 → 基线聊天可用 → **预验证 admin 前端构建链（便携 Node 20）** → 集成机制细节确认 → AI 关闭时原版行为基线 | ✅ 完成，见第十节（含 9p 性能悬崖修复 60s→10ms、E2E 聊天与自动回复基线） |
+| 1 环境与基线 | git init 两段提交 → 启动 Docker → compose 全栈（nginx:8011/mysql:33061/redis:63791）→ 安装 CRMEB → admin/H5 登录 → 基线聊天可用 → **预验证 admin 前端构建链（便携 Node 20）** → 集成机制细节确认 → AI 关闭时原版行为基线 | ✅ 完成，见第十节（含 9p 性能悬崖修复 60s→10ms、E2E 聊天与自动回复基线、admin 构建链与产物 96.6% 字节一致，见 10.7） |
 | 2 AI 微服务 | FastAPI + RAG + 知识库同步 + **trace_id 契约 / 结构化日志 / /metrics / health** | pytest 全绿 + 真实 API 冒烟 |
 | 3 集成与可靠性 | ChatHandle 挂接 + AI Worker + 七项可靠性标准 + 后台开关 | 链路跑通 + 初步故障注入 |
 | 4 可观测与量化 | ai_call_log + 后台监控页 + Prometheus/Grafana + exporter + locust 压测 + 故障演练 | 数字、图表与截图产出 |
@@ -90,7 +90,7 @@ Grafana ◀── Prometheus ◀── ai-service:/metrics ＋ PHP指标exporter
 | admin 构建链走不通 | 窗口 1 提前预验；兜底先用 dev server 验证，构建问题单独修 |
 | H5 ws 地址若预构建写死 | 兜底：自建 uni-app H5 构建链 |
 | 异步机制调研受阻 | 兜底：同步短超时调用（保留 TODO，链路可靠性打折需如实说明） |
-| LLM key 失效 | 窗口 1 顺带 curl 验活 |
+| LLM key 失效 | 密钥属凭据，不能从工作区外读取、也不入库；由使用者把 key 放进 `ai-service/.env`（已 gitignore），窗口 2 首步做 `/api/health` + 一次真实 embeddings/chat 冒烟验活 |
 
 ## 九、量化产出（进 README 与简历）
 
@@ -141,7 +141,7 @@ Docker Desktop（WSL2 后端）跑通上游 compose：nginx 8011、mysql 33061�
 - 后台「开发配置」是低代码：`Route::resource('config_class','v1.setting.SystemConfigTab')` + `Route::resource('config','v1.setting.SystemConfig')`，表单由 FormBuilder 依 `system_config` 行渲染 → **AI 设置分组（开关、超时、并发、降级文案等）纯数据落地，不需要写 Vue 页面**。读取用 `sys_config()`（`app/common.php:130`）。
 - 客服自动回复管理接口：`POST /adminapi/app/kefu/auto_reply/save/:id`（字段 `keys/type/data/status`），底层即 `eb_wechat_key` + `eb_wechat_reply`，与 `ChatHandle::chat()` 读取的表一致。注意路由挂在 `app` 分组下，完整路径带 `/app/` 前缀。
 - adminapi 鉴权头名是 **`Authori-zation`**（`config('cookie.token_name')`），不是 `Token`；也接受 `?token=`。
-- `.env` 坑：上游模板 `public/install/.env` 是 **CR 换行**，`think\Env::load()` 用 `parse_ini_file` 解析不了；已手工改为 LF。窗口 6 计划在 README 记录，并把模板换成 LF 作为我们的小修复之一。
+- `.env` 坑：上游模板 `public/install/.env` 是 **CR 换行**，`think\Env::load()` 用 `parse_ini_file` 解析不了；已把模板改为 LF 并新增 `.gitattributes` 锁住换行符（见 10.8），这是我们对上游的一个小修复，README 会单独列出。
 - 安全观察（暂不改，考虑提 issue 给上游）：`adminapi` 登录在 `captchaVerification` 为空时直接跳过滑块校验（`app/adminapi/controller/Login.php:101`）。
 
 ### 10.5 本地演示账号（README 会公开，仅本地演示数据）
@@ -151,4 +151,42 @@ Docker Desktop（WSL2 后端）跑通上游 compose：nginx 8011、mysql 33061�
 ### 10.6 待办移交窗口 3
 
 滑块验证码在本机 Qoder 内置浏览器里因画布尺寸为 0 无法拖动，后台 UI 登录改用 API 取证；窗口 3 若要截图，需要在本机 Chrome 里人工过一次滑块，或用 API 会话取数据。
+
+### 10.7 admin 前端构建链预验证（窗口 5 的前置风险已消除）
+
+上游 `template/admin` 是 Vue2 + `@vue/cli-service 4.x`，`package.json` 要求 `node >14 <23`（本机系统 Node 24 不兼容），改用便携 Node **v20.19.0**（`D:\AIcode\Tool\node-v20.19.0-win-x64`）。走通的命令序列，窗口 5 直接复用：
+
+```bash
+export PATH="/d/AIcode/Tool/node-v20.19.0-win-x64:$PATH"
+cd template/admin
+npm install --legacy-peer-deps --registry=https://registry.npmmirror.com   # 658MB node_modules
+NODE_OPTIONS=--openssl-legacy-provider npx vue-cli-service build --mode=production
+```
+
+`--openssl-legacy-provider` 是必须的：webpack4 用 md4 做哈希，Node 17+ 的 OpenSSL 3 禁用了它，否则报 `error:0308010C:digital envelope routines::unsupported`。
+
+构建结果与验收（不只看「编译成功」，而是与上游随包产物 `crmeb/public/admin` 做逐文件内容比对）：
+
+| 指标 | 数值 |
+|---|---|
+| 构建 | exit 0，无 error |
+| 产物 | 598 个文件 / 41MB（上游 596 个 / 41MB） |
+| **内容逐字节相同** | **576 / 596 = 96.6%** |
+| 仅样式 chunk 文件名（chunk-id）不同、内容哈希相同 | `app.86b55c86.css`、`chunk-vendors.0a536a1c.css` 等，说明源码一致 |
+| 内容不同的文件 | 6 个 monaco worker（`ts/html/css/json/editor`，依赖在 semver 范围内漂到新版）+ `app.js`/`chunk-vendors.js` + 9 个懒加载 chunk + `index.html` |
+
+部署校验：把 `dist/` 灌进容器 `/var/www/public/admin`（`docker cp` 3.2s），经真实 nginx 访问 `/admin/` → 200，入口引用的 4 个资源 `app.css`/`chunk-vendors.css`/`app.js`/`chunk-vendors.js` 全部 200 且体积正确（1.4MB / 4.2MB / 259KB / 782KB），随后已还原成上游产物，保持基线干净（宿主目录未动，容器内文件数回到 596）。
+
+**结论：新增「AI 运行监控」页与文案生成按钮需要改 admin 前端，这条链路可行**；构建产物比对说明本机源码与上游发布物同源，窗口 5 的改动不会被工具链差异淹没。
+
+### 10.8 本窗口新增进仓库的文件
+
+| 文件 | 作用 |
+|---|---|
+| `help/docker/docker-compose.yml`（改） | `/var/www` 换 ext4 命名卷 `crmeb_app` |
+| `help/docker/php/conf.d/zz-dev.ini`（新） | 清 `open_basedir` + OPcache/realpath 调优 |
+| `help/docker/sync.sh`（新） | 宿主 → 容器代码同步（tar 流式，绕开 9p） |
+| `help/dev/chat-e2e.mjs`（新） | 双端 WebSocket 聊天 E2E 脚本，窗口 3/4 复用 |
+| `.gitattributes`（新） | 强制 `*.sh/*.mjs/*.ini/*.yml` 与安装模板为 LF，防止 Windows 检出又变回 CRLF |
+| `crmeb/public/install/.env`（改） | CR 换行 → LF，`parse_ini_file` 才能解析；容器内实测替换后 7 个 section 正常读出 |
 

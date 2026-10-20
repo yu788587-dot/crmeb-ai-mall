@@ -1,0 +1,27 @@
+# 行尾规范（只针对本仓库新增/修复的文件，不做全局 renormalize，避免与上游产生海量 diff）
+#
+# 原因：Windows 上 core.autocrlf=true 会把 text 文件在检出时转成 CRLF，
+# 导致 bash 脚本 help/docker/sync.sh 执行时报 $'\r': command not found，
+# 也让容器内 exec 的 shell 片段行为与 Linux 用户不一致。
+
+*.sh    text eol=lf
+*.mjs   text eol=lf
+*.ini   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+help/**            text eol=lf
+docs/**            text eol=lf
+
+# 上游安装模板原为「仅 CR」换行，parse_ini_file 解析不出来（详见 docs 第 10.4 节），此处强制 LF
+crmeb/public/install/.env  text eol=lf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.ttf binary
+*.zip binary
+*.xlsx binary
