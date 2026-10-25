@@ -11,6 +11,7 @@
 
 namespace crmeb\services\workerman\chat;
 
+use app\services\ai\AiChatService;
 use app\services\kefu\LoginServices;
 use app\services\kefu\service\StoreServiceLogServices;
 use app\services\kefu\service\StoreServiceRecordServices;
@@ -335,6 +336,10 @@ class ChatHandle
                 $replyMessagesCount = $logServices->getMessageNum(['uid' => $to_uid, 'to_uid' => $uid, 'type' => 0, 'is_tourist' => $isTourist ? 1 : 0]);
                 $autoReply['recored'] = $serviceRecored->saveRecord($to_uid, $uid, $autoReplyMsn, $formType ?? 0, $autoReplyData['type'] == 'text' ? 1 : 3, $replyMessagesCount, $isTourist, $kefuInfo['nickname'], $kefuInfo['avatar']);
                 $response->connection($this->service->user()[$uid])->send('reply', $autoReply);
+            } elseif (!isset($this->service->kefuUser()[$to_uid])) {
+                //AI 接管：关键词未命中 && 对话客服离线 && 后台开关开启（crmeb-ai-mall 二开）
+                //走队列异步生成，失败静默降级；人工在线时绝不接管（人工优先）
+                app()->make(AiChatService::class)->tryDispatch($data, $formType ?? 0, (bool)$isTourist);
             }
         }
     }

@@ -2,7 +2,7 @@
 
 > **状态**：✅ 方案已批准（2026-10-01），执行中
 > **定位**：主打 **AI 系统工程能力**——在成熟电商系统上落地 AI 能力的异步架构、降级容错与可观测性实践
-> 最后更新：2026-10-01
+> 最后更新：2026-10-25（窗口 3 完成）
 
 ## 一、项目定位
 
@@ -66,7 +66,7 @@ Grafana ◀── Prometheus ◀── ai-service:/metrics ＋ PHP指标exporter
 |---|---|---|
 | 1 环境与基线 | git init 两段提交 → 启动 Docker → compose 全栈（nginx:8011/mysql:33061/redis:63791）→ 安装 CRMEB → admin/H5 登录 → 基线聊天可用 → **预验证 admin 前端构建链（便携 Node 20）** → 集成机制细节确认 → AI 关闭时原版行为基线 | ✅ 完成，见第十节（含 9p 性能悬崖修复 60s→10ms、E2E 聊天与自动回复基线、admin 构建链与产物 96.6% 字节一致，见 10.7） |
 | 2 AI 微服务 | FastAPI + RAG + 知识库同步 + **trace_id 契约 / 结构化日志 / /metrics / health** | ✅ 代码已提交 f665fcb7，pytest 28 passed，fake 冒烟通过；真实 API 冒烟移至窗口 3（需用户填 key） |
-| 3 集成与可靠性 | ChatHandle 挂接 + AI Worker + 七项可靠性标准 + 后台开关 | 链路跑通 + 初步故障注入 |
+| 3 集成与可靠性 | ChatHandle 挂接 + AI Worker + 七项可靠性标准 + 后台开关 | ✅ 完成，见第十二节（E2E 五场景全绿 + 故障注入矩阵 + trace_id 双端实证） |
 | 4 可观测与量化 | ai_call_log + 后台监控页 + Prometheus/Grafana + exporter + locust 压测 + 故障演练 | 数字、图表与截图产出 |
 | 5 后台 AI 文案 | adminapi 接口 + admin 前端按钮 + 构建（轻量，工期紧可砍） | 生成并应用文案 |
 | 6 文档与开源 | README 重写（架构/时序/性能表/演练GIF）+ docs + compose 一键部署（含 ai-service/Prometheus/Grafana）+ push + Release v1.0.0 | 开源发布 |
@@ -285,4 +285,106 @@ chromadb 0.5.23 + posthog 7.x 有签名不兼容 bug：即使设 `anonymized_tel
 ### 11.8 本窗口新增进仓库的文件
 
 共 35 个文件（不含 .env 和 __pycache__），详见 11.1 目录树。核心依赖：fastapi 0.115.6 / httpx 0.28.1 / chromadb 0.5.23 / prometheus-client 0.23.1 / PyMySQL 1.1.1 / numpy 2.2.1 / pytest 8.3.4。
+
+## 十二、窗口 3 执行记录（集成与可靠性，2026-10-25 完成）
+
+### 12.1 集成链路（全部真实进程，非 mock）
+
+```
+用户 ws(:40002 chat进程) ──chat() 关键词未命中 && 客服离线 && 开关开
+  └─ AiChatService::tryDispatch（chat 进程内，微秒级）
+       ├─ 幂等锁 SETNX ai:reply_lock:{msg_id}（原生 Redis 直连，TTL 1 天）
+       ├─ 背压检查 LLEN 队列 > ai_service_queue_limit → 放弃
+       ├─ trace_id 生成 ai-{16hex} → 作为任务参数入队
+       └─ think-queue 推入 redis 队列 CRMEB6ad6fadaa57bf
+            └─ queue:listen 进程消费 AiChatJob::doJob
+                 ├─ SLA 剩余 = ai_service_timeout - (now - 发消息时刻)，<2s 直接放弃
+                 ├─ 取最近 N 条双向文本聊天 → history[{role,text}]
+                 ├─ AiClient POST /api/chat（X-Trace-Id 头；连接 1s / 单次 15s / 预算受 SLA 约束）
+                 │    └─ ai-service(:8000)：幂等→串行→背压→RAG→LLM→置信度→降级
+                 ├─ 落库 store_service_log（客服身份, type=1）+ saveRecord —— 与关键词自动回复同通路
+                 └─ ChannelService(trigger=crmeb_chat) → chat 进程 ws 推 reply 给用户
+```
+
+挂接点：`ChatHandle::chat()` 关键词自动回复块的 `elseif (!isset(kefuUser()[$to_uid]))` 分支（`ChatHandle.php:313-343`）。**人工优先**：目标客服以客服身份在线（kefuUser 连接表）时绝不接管；AI 任何异常在 tryDispatch/doJob 两层 try/catch 内吞掉，原聊天功能零影响。
+
+### 12.2 七项可靠性标准的落地与验证
+
+| 标准 | PHP 侧实现 | 验证证据 |
+|---|---|---|
+| 1 trace_id 贯穿 | chat 进程生成 → 队列参数 → X-Trace-Id 头 → 双端日志 | 12.5 成对日志样例 |
+| 2 超时分层 | curl CONNECTTIMEOUT=1 / 单次 15s / 整体 SLA 按发消息时刻计算 | 注入挂起 16s → curl(28) 于 15001ms 精确放弃 |
+| 3 重试与幂等 | 仅 errno 6/7 与 5xx 重试一次；28/4xx 不重试；SETNX + user_msg_id 双层幂等 | 500→attempts=2；连接拒绝→attempts=2；超时→attempts=1 |
+| 4 背压 | 入队前 LLEN > queue_limit(50) 直接放弃 | 代码路径 + 配置项（窗口 4 压测量化） |
+| 5 熔断降级 | ai-service 熔断开启时秒级返回 degraded(circuit_open)，PHP 静默 | 5 次连续失败→open，PHP 收到 circuit_open 仅 16.4ms |
+| 6 健康检查 | `/api/health`（含 kb/breaker/backpressure 探针）已有；ai_service_url 可配 | 容器内 host.docker.internal:8000 可达 |
+| 7 优雅关闭 | job 不重投（AI 失败=放弃，队列语义天然不丢消息）；幂等锁防重投双发 | failure 场景零污染 |
+
+降级语义分两档：**硬故障**（llm_timeout/llm_unavailable/circuit_open/overloaded/bad_upstream_response + 传输层失败）默认静默不发；**软降级**（no_sources/low_confidence）发送引导转人工话术。后台 `ai_service_notify_on_failure` 可把硬故障改为发送配置话术。
+
+### 12.3 本窗口踩的两个环境坑（均已修复）
+
+1. **file 缓存 tag 竞态**：安装默认 `cache.driver=file`，`CacheService::set`（`Cache::tag()->set`）在 php-fpm×N + workerman + timer + queue 多进程下偶发抛异常 → 症状为 JwtAuth「保存token失败」或 ws 登录直接被 close。修复：本地 `.env` 切 `DRIVER=redis`（队列本就依赖 redis），切换后连续登录 10/10 成功。同时 AiChatService 改为**原生 \Redis 直连**（.env [REDIS] 参数）做幂等/背压，不再依赖 Cache::handler()。
+2. **system_config 的 value 按 JSON 解析**：`getConfigValue()` 会 `json_decode`，字符串值必须带双引号存储（数字裸存即可）。裸存字符串 → json_decode 为 null → 静默落到代码默认值（URL 恰好同值没暴露，降级话术文案不同才暴露）。已修正 SQL 模板并 UPDATE 存量行。
+
+另：PDO 预处理不支持同名占位符复用（`SQLSTATE[HY093]`），whereRaw 双向会话查询需 `:u1/:k1/:k2/:u2` 四个独立命名。
+
+### 12.4 E2E 验证矩阵（help/dev/ai-chat-e2e.mjs，真实 ws + 真实容器）
+
+| 场景 | 断言 | 结果 |
+|---|---|---|
+| off | 开关关闭：无 AI 回复、无落库、原通路回显正常 | ✅ 3/3 |
+| normal | 客服离线：30s 内收到客服身份 reply + 落库(uid=客服,type=1) | ✅ 3/3，实际 ~2s |
+| human | 客服在线：AI 不接管（无 reply、无新增落库） | ✅ 3/3 |
+| failure | ai-service 停机：静默降级、零污染、chat 进程存活可继续聊天 | ✅ 4/4 |
+| notify | 停机 + notify=1：收到**配置库**降级话术（开小差文案） | ✅ 1/1 |
+
+复用窗口 1 的 chat-e2e.mjs 同步复跑：基线 3/3 全绿（AI 关/开都不影响原有功能）。
+
+### 12.5 故障注入矩阵（fake provider + fault-server.mjs，量化数据来自 PHP 结构化日志）
+
+| 注入 | AiClient 行为 | 日志证据（attempts / 耗时） |
+|---|---|---|
+| 服务不可达（连接拒绝） | 重试 1 次 → 静默 | `curl(7)`, attempts=2, 5.1ms |
+| HTTP 500（fault-server） | 重试 1 次 → 静默 | `http_status:500`, attempts=2, 5.5ms |
+| 挂起 16s（> 单次 15s 上限） | **不重试**，15s 精确放弃 | `curl(28)`, attempts=1, 14998.8ms |
+| LLM 层 5xx（fake_fail_mode=5xx） | ai-service 应答降级 → 静默 | `degraded:llm_unavailable`, 0.4ms |
+| 熔断开启（连失 5 次） | 秒级快速失败 → 静默 | `degraded:circuit_open`, 16.4ms；health 显示 state=open, trips=1 |
+
+### 12.6 trace_id 双端实证（一次问答的成对日志）
+
+```
+PHP  queue进程  [ai] reply_sent  {"trace_id":"ai-496e9e290e9b9a49","msg_id":39,
+                "http":{"status":200,"attempts":1,"duration_ms":1048.3},
+                "ai_latency":1010.4,"total_ms":1103.8}
+PY   ai-service  ai.chat chat_completed  {"trace_id":"ai-496e9e290e9b9a49",
+                "latency_ms":1010.2,"model":"fake/none","tokens":{"prompt":111,"completion":18}}
+```
+
+同一 id 双端可检索，耗时分解互相印证（ai-service 1010ms ⊂ HTTP 1048ms ⊂ job 全程 1104ms）。
+
+### 12.7 后台低代码配置（D1 验证）
+
+`GET /adminapi/setting/config_class`：AI 智能客服分组（id=138）列于首位；`GET /adminapi/setting/config_list/138` 返回全部 7 项（open/url/timeout/history_limit/queue_limit/notify_on_failure/fallback_text）且字符串值 JSON 解码正确。admin 前端「设置」即可渲染编辑，无需新增 Vue 页面。注意 adminapi 鉴权头为 `Authori-zation: Bearer <token>`，登录字段名是 `pwd` 不是 `password`。
+
+### 12.8 本窗口新增/修改的文件
+
+| 文件 | 行数 | 作用 |
+|---|---|---|
+| `crmeb/app/services/ai/AiChatService.php`（新） | 156 | 派发编排：开关/游客/类型过滤 → SETNX 幂等 → LLEN 背压 → trace_id → 入队 |
+| `crmeb/app/jobs/AiChatJob.php`（新） | 225 | 队列任务：SLA 剩余 → history 构造 → HTTP → 降级分档 → 落库 + channel 推送 |
+| `crmeb/crmeb/services/ai/AiClient.php`（新） | 104 | curl 分层超时 + 受限重试（errno 6/7 与 5xx 一次） |
+| `crmeb/crmeb/services/workerman/chat/ChatHandle.php`（改） | +5 | elseif 挂接（关键词未命中 && 客服离线） |
+| `help/sql/ai_service_config.sql`（新） | 46 | 低代码配置分组（幂等可重放；含 JSON 存储约定注释） |
+| `help/dev/ai-chat-e2e.mjs`（新） | 242 | 五场景 E2E（内置 docker exec 配置翻转与落库校验） |
+| `help/dev/fault-server.mjs`（新） | 20 | 一次性 HTTP 故障注入（500 / 挂起 16s） |
+
+环境变更（不入库）：容器 `.env` 经 `crmeb/.env`（gitignored）同步，`[CACHE] DRIVER=redis`；`ai-service` 已灌 KB（7 docs：3 商品 + 3 话术 + 1 关键词）。
+
+### 12.9 移交窗口 4 的事项
+
+1. **真实 API 冒烟仍未做**：需用户把 SiliconFlow key 填入 `ai-service/.env`（`SILICONFLOW_API_KEY` + `LLM_PROVIDER=siliconflow`），流程同 11.7-4
+2. `ai_call_log` 埋点表 + 后台监控页（AiChatJob 中 `reply_sent` 日志已含所需字段，落表即可）
+3. Prometheus/Grafana + PHP 指标 exporter + locust 压测（背压阈值 50 的量化验证）
+4. fake provider 的 RAG min_score=0.25 下「测试手机」问句未命中 KB（feature-hash 语义弱，真实 bge-m3 预期改善——可在窗口 4 对比量化）
 
