@@ -74,5 +74,7 @@ crmeb/runtime/temp/readme.md
 .codebuddy/rules/git-commit-standard.mdc
 .codebuddy/rules/readme.mdc
 Dockerfile
+# 二开新增：ai-service 镜像定义需要入库（上游规则忽略裸 Dockerfile）
+!ai-service/Dockerfile
 .codebuddy/models.json
 .codebuddy/rules/project-intro.mdc

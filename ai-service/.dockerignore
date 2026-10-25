@@ -1,0 +1,17 @@
+# 构建上下文只留 requirements.txt 与 app/（见 Dockerfile COPY）
+.venv
+data
+logs
+results
+tests
+__pycache__
+*.pyc
+.pytest_cache
+.coverage
+.env
+.env.example
+locustfile.py
+drill_breaker.py
+exporter.py
+Dockerfile
+.dockerignore
