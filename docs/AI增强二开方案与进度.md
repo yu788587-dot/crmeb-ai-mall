@@ -383,8 +383,25 @@ PY   ai-service  ai.chat chat_completed  {"trace_id":"ai-496e9e290e9b9a49",
 
 ### 12.9 移交窗口 4 的事项
 
-1. **真实 API 冒烟仍未做**：需用户把 SiliconFlow key 填入 `ai-service/.env`（`SILICONFLOW_API_KEY` + `LLM_PROVIDER=siliconflow`），流程同 11.7-4
+1. ~~真实 API 冒烟~~ ✅ 已完成（2026-10-25 补验，见 12.10）：SiliconFlow + DeepSeek-V4.1-Flash + bge-m3
 2. `ai_call_log` 埋点表 + 后台监控页（AiChatJob 中 `reply_sent` 日志已含所需字段，落表即可）
 3. Prometheus/Grafana + PHP 指标 exporter + locust 压测（背压阈值 50 的量化验证）
-4. fake provider 的 RAG min_score=0.25 下「测试手机」问句未命中 KB（feature-hash 语义弱，真实 bge-m3 预期改善——可在窗口 4 对比量化）
+4. ~~fake provider 的 RAG 命中弱~~ ✅ 已用真实 bge-m3 解决（见 12.10）；fake vs 真实检索质量对比可留作窗口 4 量化素材
+
+### 12.10 真实 API 冒烟记录（SiliconFlow，2026-10-25）
+
+| 项目 | 结果 |
+|---|---|
+| 验活 | embeddings（bge-m3）1024 维 ✓；chat（deepseek-ai/DeepSeek-V4.1-Flash）应答 ✓；`/api/health` status=**ok**（探针真实调用） |
+| KB 重灌 | 7 docs（3 商品 + 3 话术 + 1 关键词）真实 bge-m3 向量，0.95s；**换 embedding 模型必须重灌**（向量空间不同） |
+| 直接冒烟 | RAG 命中 Xiaomi Civi 2 等 4 sources；回答**如实无幻觉**（5G 制式资料未写→不编造、建议转人工；库存 400 / 价格 2299 / 48h 发货均引自 KB）；3321ms，tokens 251+181 |
+| E2E 真实链路 | `--scenario normal` 全绿；PHP 侧 total **4114.4ms**（HTTP 4046.8 / ai-service 4028.1），trace `ai-8bb9c191c6e8da63`，`kb_used:true` |
+
+过程记录与坑：
+
+- **本机直连 SiliconFlow 的 curl 必须 `-4 --ssl-no-revoke`**（本机 IPv6 路由异常 + Windows schannel 证书吊销服务器不可达）；Python httpx 走 OpenSSL 不受影响，ai-service 无需改动。
+- **Git Bash 下 curl -d 传中文 JSON 会被编码损坏**（400 "error parsing body"），与窗口 2 记录一致——凡含中文的验证一律用 Python httpx。
+- 首次 `/api/kb/sync` 在 KB 重置后中断（未完成），重试成功——窗口 4 可观测性上线后关注此路径。
+- **密钥安全**：key 仅存 `ai-service/.env`（`ai-service/.gitignore:9` 忽略，提交前已 grep 全仓库确认无任何 key 片段入库）。曾评估 DeepSeek 官方 key（无 embeddings 端点，需拆分 provider）未采用，相关本地记录已核查清除（工作区文件 / git 全部历史 / shell 历史 / 会话临时文件四处均无）。
+- 选型说明：SiliconFlow 一个 key 同时提供 chat（含 DeepSeek 系列模型，选用 V4.1-Flash）与 bge-m3 embedding，维持单 provider 架构零代码改动；DeepSeek 官方 V4.1 若未来要用，需 ~20 行拆分改造（chat 走官方 + embedding 留 SiliconFlow）。
 
