@@ -196,6 +196,10 @@ const lastKefuReplyRow = (userUid, kefuUid) =>
   } else if (SCENARIO === 'failure') {
     setConfig('ai_service_open', '1');
     setConfig('ai_service_notify_on_failure', '0');
+    //自包含停机：切到死端口（传输层不可达，与停 uvicorn 等价），场景结束还原——
+    //不依赖人工停宿主机进程，开源后可一键复放
+    const originalUrl = mysql(`SELECT value FROM eb_system_config WHERE menu_name='ai_service_url'`).trim();
+    setConfig('ai_service_url', '"http://host.docker.internal:9999"');
     const user = chatClient('客户');
     await user.ready;
     user.send({ type: 'login', data: userToken, form_type: 1 });
@@ -214,10 +218,14 @@ const lastKefuReplyRow = (userUid, kefuUid) =>
     const echo2 = await user.waitFor((e) => e.type === 'chat' && e.data?.msn === '故障注入后的第二条消息', 5000);
     assert('故障后 chat 进程存活（可继续聊天）', !!echo2);
     user.close();
+    setConfig('ai_service_url', originalUrl); // 还原真实 ai-service 地址
 
   } else if (SCENARIO === 'notify') {
     setConfig('ai_service_open', '1');
     setConfig('ai_service_notify_on_failure', '1');
+    //同 failure：自包含切死端口制造故障
+    const originalUrl = mysql(`SELECT value FROM eb_system_config WHERE menu_name='ai_service_url'`).trim();
+    setConfig('ai_service_url', '"http://host.docker.internal:9999"');
     const user = chatClient('客户');
     await user.ready;
     user.send({ type: 'login', data: userToken, form_type: 1 });
@@ -227,6 +235,7 @@ const lastKefuReplyRow = (userUid, kefuUid) =>
     const ai = await user.waitFor((e) => isAiReply(e, kefuUid), WAIT_AI_MS);
     assert('收到配置的降级话术（notify 模式）', !!ai, ai ? `msn=${String(ai.data?.msn).slice(0, 50)}` : `${WAIT_AI_MS}ms 未收到`);
     setConfig('ai_service_notify_on_failure', '0'); // 还原默认
+    setConfig('ai_service_url', originalUrl); // 还原真实 ai-service 地址
     user.close();
 
   } else {
