@@ -101,7 +101,7 @@ services:
       REDIS_HOST: crmeb_redis
       REDIS_PORT: "6379"
       REDIS_PASSWORD: 123456
-      QUEUE_KEY: CRMEB6ad6fadaa57bf
+      QUEUE_KEY: queues:CRMEB6ad6fadaa57bf
     ports:
       - "9877:9877"
     volumes:

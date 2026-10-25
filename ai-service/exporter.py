@@ -34,7 +34,9 @@ TABLE = os.getenv("MYSQL_PREFIX", "eb_") + "ai_call_log"
 REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "63791"))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "123456")
-QUEUE_KEY = os.getenv("QUEUE_KEY", "CRMEB6ad6fadaa57bf")
+# think-queue redis 驱动的真实队列键：queues:{queue}（Redis.php getQueue），
+# 无前缀的键不存在、LLEN 恒 0 —— 与窗口4修复的 PHP 背压检查同款问题
+QUEUE_KEY = os.getenv("QUEUE_KEY", "queues:CRMEB6ad6fadaa57bf")
 
 SCRAPE_INTERVAL = float(os.getenv("EXPORTER_INTERVAL", "2"))  # 兜底轮询间隔；拉取时以游标增量为主
 
