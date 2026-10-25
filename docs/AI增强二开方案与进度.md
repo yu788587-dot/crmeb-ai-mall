@@ -557,6 +557,7 @@ admin 商品编辑页（4 个「AI 生成」入口）
 2. **SiliconFlow 延迟波动击穿 15s**：直连冒烟 8.8s，但偶发 >15s（PHP 单次上限）→ curl(28)。文案是管理后台动作无聊天 SLA，超时提至单次 21s/预算 25s（> ai-service SLA 20s，必能收到应答或降级信封，不会双头等待）
 3. **ai-service 启动环境**：全局 Anaconda python 缺 pymysql（旧进程可能带虚拟环境变量启动），改用项目 `.venv`（pytest 同环境已验证依赖齐全）以 0.0.0.0:8000 重启
 4. **adminapi 登录路径**：是 `/adminapi/login`（无 /admin 段，与 `adminapi/login/info` 同前缀），字段名 pwd
+5. **docker 重启后 workerman 僵死 master**：/var/www 在命名卷中，容器重启后旧 pid 文件残留，`start --d` 判定 already running 提前退出，出现「master 活着但 worker 为 none」的假活状态（ws 握手全挂）。处置：容器内 `kill -9` 旧 master + `php think workerman start --d`（守护进程持有 stdout，docker exec 不返回属正常假象）；之后 chat E2E normal 场景全绿
 
 ### 14.4 本窗口新增/修改的文件
 
