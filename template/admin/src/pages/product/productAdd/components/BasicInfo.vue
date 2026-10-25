@@ -26,13 +26,24 @@
 
     <el-col :span="24">
       <el-form-item label="商品名称：" prop="store_name">
-        <el-input
-          class="content_width"
-          v-model="formValidate.store_name"
-          placeholder="请输入商品名称"
-          maxlength="80"
-          show-word-limit
-        />
+        <div class="ai-field">
+          <el-input
+            class="content_width"
+            v-model="formValidate.store_name"
+            placeholder="请输入商品名称"
+            maxlength="80"
+            show-word-limit
+          />
+          <el-button
+            size="small"
+            type="primary"
+            plain
+            icon="el-icon-magic-stick"
+            v-db-click
+            @click="$emit('aiGenerate', 'store_name')"
+            >AI 生成</el-button
+          >
+        </div>
       </el-form-item>
     </el-col>
 
@@ -205,4 +216,12 @@ export default {
 </script>
 <style lang="scss" scoped>
 @use '../productAdd.scss' as *;
+.ai-field {
+  display: flex;
+  align-items: center;
+  .el-button {
+    margin-left: 8px;
+    flex-shrink: 0;
+  }
+}
 </style>

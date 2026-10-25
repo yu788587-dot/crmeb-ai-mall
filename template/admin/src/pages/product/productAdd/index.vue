@@ -40,6 +40,7 @@
           @delVideo="delVideo"
           @addCate="addCate"
           @addGoodsTag="addGoodsTag"
+          @aiGenerate="aiGenerate"
         ></basic-info>
 
         <!-- 规格库存-->
@@ -88,6 +89,7 @@
           :contents="contents"
           :content="content"
           @getEditorContent="getEditorContent"
+          @aiGenerate="aiGenerate"
         ></product-detail>
 
         <!-- 物流设置-->
@@ -151,6 +153,7 @@
           @customMessBtn="customMessBtn"
           @delcustom="delcustom"
           @addcustom="addcustom"
+          @aiGenerate="aiGenerate"
         ></other-setting>
 
         <el-form-item>
@@ -314,6 +317,8 @@
         @close="labelClose"
       ></goodsLabel>
     </el-dialog>
+    <!-- AI 文案生成（窗口5）-->
+    <ai-copywriting ref="aiCopywriting" @apply="onAiApply"></ai-copywriting>
   </div>
 </template>
 
@@ -371,6 +376,7 @@ import LogisticsSetting from './components/LogisticsSetting.vue';
 import PriceCommission from './components/PriceCommission.vue';
 import MarketingSetting from './components/MarketingSetting.vue';
 import OtherSetting from './components/OtherSetting.vue';
+import AiCopywriting from '../components/aiCopywriting.vue';
 import { formatRichText } from '@/utils/editorImg';
 
 export default {
@@ -392,6 +398,7 @@ export default {
     PriceCommission,
     MarketingSetting,
     OtherSetting,
+    AiCopywriting,
   },
   data() {
     return {
@@ -956,6 +963,32 @@ export default {
     // 商品详情
     getEditorContent(data) {
       this.content = data;
+    },
+    // AI 文案生成（窗口5）：打开弹窗，素材预填当前字段值，兜底商品名
+    aiGenerate(key) {
+      const targets = {
+        store_name: { key: 'store_name', label: '商品名称', kind: 'product_title' },
+        store_info: { key: 'store_info', label: '商品卖点', kind: 'product_sell_point' },
+        keyword: { key: 'keyword', label: 'SEO 关键词', kind: 'product_seo_keywords' },
+        description: { key: 'description', label: '商品详情', kind: 'product_desc' },
+      };
+      const target = targets[key];
+      if (!target) return;
+      const seed = (this.formValidate[key] || '').toString().trim();
+      this.$refs.aiCopywriting.open(target, {
+        seed: seed || this.formValidate.store_name || '',
+        context: this.formValidate.store_name || '',
+      });
+    },
+    // AI 文案应用：详情字段需同时同步富文本编辑器（contents）与提交源（content）
+    onAiApply({ key, text }) {
+      if (key === 'description') {
+        this.contents = text;
+        this.content = text;
+      } else {
+        this.formValidate[key] = text;
+      }
+      this.$message.success('AI 文案已应用，可继续编辑');
     },
     cancel() {
       this.modals = false;

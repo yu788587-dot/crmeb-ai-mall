@@ -20,7 +20,9 @@ log = logging.getLogger("ai.copywriting")
 
 PROMPTS = {
     "product_title": "请为以下商品生成一个简洁吸引人的电商标题（20字以内）：\n{seed}",
+    "product_sell_point": "请为以下商品写一句 30 字以内的卖点文案，突出最核心的购买理由：\n{seed}",
     "product_desc": "请为以下商品写一段 100 字左右的商品详情描述，突出卖点：\n{seed}",
+    "product_seo_keywords": "请为以下商品提取 5-8 个适合电商搜索的 SEO 关键词，用空格分隔，不要编号：\n{seed}",
     "speechcraft": "请根据以下客服场景生成一条专业友好的话术模板：\n{seed}",
     "ad_copy": "请为以下推广素材写一条短文案（30字以内），适合朋友圈/社群转发：\n{seed}",
 }

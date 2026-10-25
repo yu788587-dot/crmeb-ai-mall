@@ -58,3 +58,12 @@ export function aiHealth() {
     method: 'get',
   });
 }
+
+// 商品编辑页 AI 文案生成（窗口5），data: { kind, seed, tone?, max_tokens? }
+export function aiCopywriting(data) {
+  return request({
+    url: '/ai/copywriting/generate',
+    method: 'post',
+    data,
+  });
+}

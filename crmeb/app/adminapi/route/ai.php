@@ -28,6 +28,11 @@ Route::group('ai', function () {
         Route::get('monitor/health', 'v1.ai.Monitor/health')->option(['real_name' => 'AI监控健康探针']);
     })->option(['parent' => 'ai', 'cate_name' => 'AI 运行监控']);
 
+    Route::group(function () {
+        //商品编辑页 AI 文案生成（标题/卖点/详情/SEO）
+        Route::post('copywriting/generate', 'v1.ai.Copywriting/generate')->option(['real_name' => 'AI文案生成']);
+    })->option(['parent' => 'ai', 'cate_name' => 'AI 文案']);
+
 })->middleware([
     \app\http\middleware\AllowOriginMiddleware::class,
     \app\adminapi\middleware\AdminAuthTokenMiddleware::class,

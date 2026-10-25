@@ -50,7 +50,7 @@ class Envelope(BaseModel):
 
 
 class CopywritingRequest(BaseModel):
-    kind: Literal["product_title", "product_desc", "speechcraft", "ad_copy"] = "product_desc"
+    kind: Literal["product_title", "product_sell_point", "product_desc", "product_seo_keywords", "speechcraft", "ad_copy"] = "product_desc"
     seed: str = Field(..., min_length=1, max_length=2000, description="原始素材/关键词")
     tone: str = Field("professional", description="语气：professional / friendly / promotional")
     max_tokens: int = Field(400, ge=50, le=2000)

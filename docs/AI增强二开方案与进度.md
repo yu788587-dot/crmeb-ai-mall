@@ -2,7 +2,7 @@
 
 > **状态**：✅ 方案已批准（2026-10-01），执行中
 > **定位**：主打 **AI 系统工程能力**——在成熟电商系统上落地 AI 能力的异步架构、降级容错与可观测性实践
-> 最后更新：2026-10-25（窗口 4 完成）
+> 最后更新：2026-10-26（窗口 5 完成）
 
 ## 一、项目定位
 
@@ -68,7 +68,7 @@ Grafana ◀── Prometheus ◀── ai-service:/metrics ＋ PHP指标exporter
 | 2 AI 微服务 | FastAPI + RAG + 知识库同步 + **trace_id 契约 / 结构化日志 / /metrics / health** | ✅ 代码已提交 f665fcb7，pytest 28 passed，fake 冒烟通过；真实 API 冒烟移至窗口 3（需用户填 key） |
 | 3 集成与可靠性 | ChatHandle 挂接 + AI Worker + 七项可靠性标准 + 后台开关 | ✅ 完成，见第十二节（E2E 五场景全绿 + 故障注入矩阵 + trace_id 双端实证） |
 | 4 可观测与量化 | ai_call_log + 后台监控页 + Prometheus/Grafana + exporter + locust 压测 + 故障演练 | 数字、图表与截图产出 |
-| 5 后台 AI 文案 | adminapi 接口 + admin 前端按钮 + 构建（轻量，工期紧可砍） | 生成并应用文案 |
+| 5 后台 AI 文案 | adminapi 接口 + admin 前端按钮 + 构建（轻量，工期紧可砍） | ✅ 完成，见第十四节（真实环境生成并应用，trace + 落库双证据） |
 | 6 文档与开源 | README 重写（架构/时序/性能表/演练GIF）+ docs + compose 一键部署（含 ai-service/Prometheus/Grafana）+ push + Release v1.0.0 | 开源发布 |
 
 ## 七、关键技术坐标（已核实）
@@ -521,3 +521,59 @@ PY   ai-service  ai.chat chat_completed  {"trace_id":"ai-496e9e290e9b9a49",
 2. Grafana dashboard 截图进 README；`crmeb/public/admin` 已是含监控页的产物，窗口5改文案按钮后需再次构建覆盖
 3. 压测结果 CSV 在 `ai-service/results/`（throughput/backpressure60），README 性能表直接引用 13.6/13.7 数字
 
+
+## 十四、窗口 5 执行记录（后台 AI 文案，2026-10-26 完成）
+
+### 14.1 链路与设计
+
+```
+admin 商品编辑页（4 个「AI 生成」入口）
+  商品名称(BasicInfo) / 商品关键字+商品简介(OtherSetting) / 商品详情(ProductDetail)
+  └─ aiCopywriting.vue 弹窗：语气选择 → 素材（预填当前字段值）→ 生成 → 预览可编辑 → 应用
+       └─ POST /adminapi/ai/copywriting/generate {kind, seed, tone}
+            └─ Copywriting 控制器：kind 白名单 + seed 截断(2000) + trace_id ai-{16hex}
+                 └─ AiClient::postJson（连接1s/单次21s/预算25s）→ ai-service POST /api/copywriting
+                      └─ 同一套 breaker / backpressure / trace / 结构化日志（复用窗口2/3 原语）
+```
+
+- 第二用例与客服 chat 共享同一 ai-service 与观测链路，差异仅在：无 RAG、无幂等、无同会话串行（管理员主动触发的短任务）
+- ai-service `CopywritingRequest.kind` 由 4 种扩至 6 种（新增 `product_sell_point` 卖点 / `product_seo_keywords` SEO 关键词），与商品编辑页四个字段一一对应；pytest 28 passed 回归通过
+- 降级语义：ai-service 不可达 / code≠0 / data.degraded 一律 `fail(原因)` 返回前端 toast，绝不阻塞商品编辑本身
+- 字段映射：store_name→product_title、store_info→product_sell_point、keyword→product_seo_keywords、description→product_desc；「应用」时详情字段同时同步富文本编辑器（contents）与提交源（content），其余直接写 formValidate
+
+### 14.2 真实环境验收（API 取证，2026-10-26）
+
+| 步骤 | 结果 |
+|---|---|
+| 直连 ai-service 冒烟 | product_sell_point → 「小米Civi2轻薄自拍旗舰，2299元现货，48小时发货。」8.8s；product_seo_keywords → 7 个关键词空格分隔 |
+| adminapi 生成 | kind=product_title → **「小米Civi 2 轻薄自拍旗舰 5G 手机」**，trace `ai-db8b1e5d61d2cec9`，model DeepSeek-V4.1-Flash，842 tokens，9.4s |
+| 应用（编辑页同款保存接口 POST product/product/1） | **保存成功**（status 200） |
+| 落库复查 | `eb_store_product.id=1` store_name 已由 `Xiaomi Civi 2 冰冰蓝 8GB+128GB` 变为 AI 标题（演示商品，保留作展示） |
+| 部署验证 | `/admin/` 200，新入口 `app.823f927a.js`（1.49MB）200，产物 600 文件 |
+
+### 14.3 本窗口踩的四个坑（均已修复）
+
+1. **GET productInfo 与保存表单的字段差**：SKU 行的 `is_default_select` 由前端 SpecStock 构建时补默认值（GET 不返回），API 直调保存会 400；取证脚本对 attrs 行 `setdefault('is_default_select', 0)` 解决
+2. **SiliconFlow 延迟波动击穿 15s**：直连冒烟 8.8s，但偶发 >15s（PHP 单次上限）→ curl(28)。文案是管理后台动作无聊天 SLA，超时提至单次 21s/预算 25s（> ai-service SLA 20s，必能收到应答或降级信封，不会双头等待）
+3. **ai-service 启动环境**：全局 Anaconda python 缺 pymysql（旧进程可能带虚拟环境变量启动），改用项目 `.venv`（pytest 同环境已验证依赖齐全）以 0.0.0.0:8000 重启
+4. **adminapi 登录路径**：是 `/adminapi/login`（无 /admin 段，与 `adminapi/login/info` 同前缀），字段名 pwd
+
+### 14.4 本窗口新增/修改的文件
+
+| 文件 | 行数 | 作用 |
+|---|---|---|
+| `crmeb/app/adminapi/controller/v1/ai/Copywriting.php`（新） | 90 | 文案生成接口（kind 白名单/seed 截断/超时分层/降级归一） |
+| `crmeb/app/adminapi/route/ai.php`（改） | +5 | 「AI 文案」路由分组 |
+| `crmeb/public/admin/`（重建） | 600 文件 | 含监控页+文案按钮的构建产物 |
+| `template/admin/src/pages/product/components/aiCopywriting.vue`（新） | 128 | 生成/预览可编辑/应用弹窗（语气+素材+trace 展示） |
+| `template/admin/src/api/ai.js`（改） | +10 | aiCopywriting API |
+| `template/admin/src/pages/product/productAdd/index.vue`（改） | +40 | 弹窗挂载 + aiGenerate/onAiApply（详情双同步） |
+| `template/admin/src/pages/product/productAdd/components/{BasicInfo,OtherSetting,ProductDetail}.vue`（改） | +120 | 四字段「AI 生成」按钮 |
+| `ai-service/app/schemas.py`（改） | ±1 | kind 扩至 6 种 |
+| `ai-service/app/services/copywriting.py`（改） | +2 | 新增卖点/SEO 两类 PROMPTS |
+
+### 14.5 移交窗口 6 的事项
+
+1. README 性能表直接引用 13.6/13.7 数字；架构图补上第二用例（后台文案与客服共用链路）
+2. `crmeb/public/admin` 已是含监控页+文案按钮的最终产物（600 文件）；`template/admin/dist` 与 `ai-service-run.log` 均 gitignored
+3. ai-service 当前以 `.venv` python 运行（0.0.0.0:8000，uvicorn），compose 的 ai-exporter/prometheus/grafana 三服务已在跑（窗口4）

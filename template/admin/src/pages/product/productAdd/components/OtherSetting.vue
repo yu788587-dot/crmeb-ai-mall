@@ -3,27 +3,49 @@
   <el-row>
     <el-col :span="24">
       <el-form-item label="商品关键字：">
-        <el-input
-          class="content_width"
-          v-model.trim="formValidate.keyword"
-          placeholder="请输入商品关键字"
-          maxlength="100"
-          show-word-limit
-        />
+        <div class="ai-field">
+          <el-input
+            class="content_width"
+            v-model.trim="formValidate.keyword"
+            placeholder="请输入商品关键字"
+            maxlength="100"
+            show-word-limit
+          />
+          <el-button
+            size="small"
+            type="primary"
+            plain
+            icon="el-icon-magic-stick"
+            v-db-click
+            @click="$emit('aiGenerate', 'keyword')"
+            >AI 生成</el-button
+          >
+        </div>
         <div class="tips-info">PC端的SEO优化以及可以根据关键字进行商品搜索</div>
       </el-form-item>
     </el-col>
     <el-col :span="24">
       <el-form-item label="商品简介：">
-        <el-input
-          class="content_width"
-          v-model.trim="formValidate.store_info"
-          type="textarea"
-          :rows="3"
-          placeholder="请输入商品简介"
-          maxlength="100"
-          show-word-limit
-        />
+        <div class="ai-field ai-field-top">
+          <el-input
+            class="content_width"
+            v-model.trim="formValidate.store_info"
+            type="textarea"
+            :rows="3"
+            placeholder="请输入商品简介"
+            maxlength="100"
+            show-word-limit
+          />
+          <el-button
+            size="small"
+            type="primary"
+            plain
+            icon="el-icon-magic-stick"
+            v-db-click
+            @click="$emit('aiGenerate', 'store_info')"
+            >AI 生成</el-button
+          >
+        </div>
         <div class="tips-info">公众号分享商品以及PC端SEO优化使用</div>
       </el-form-item>
     </el-col>
@@ -215,4 +237,18 @@ export default {
 </script>
 <style lang="scss" scoped>
 @use '../productAdd.scss' as *;
+.ai-field {
+  display: flex;
+  align-items: center;
+  .el-button {
+    margin-left: 8px;
+    flex-shrink: 0;
+  }
+  &.ai-field-top {
+    align-items: flex-start;
+    .el-button {
+      margin-left: 8px;
+    }
+  }
+}
 </style>
