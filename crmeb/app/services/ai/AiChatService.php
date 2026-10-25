@@ -12,6 +12,7 @@
 namespace app\services\ai;
 
 use app\jobs\AiChatJob;
+use app\services\ai\AiCallLog;
 use crmeb\utils\Queue;
 use think\facade\Env;
 use think\facade\Log;
@@ -66,19 +67,29 @@ class AiChatService
             if ($redis && !$redis->setNx(self::REPLY_LOCK_PREFIX . $msgId, 1)) {
                 return false;
             }
-            if ($redis) {
-                $redis->expire(self::REPLY_LOCK_PREFIX . $msgId, self::REPLY_LOCK_TTL);
+                if ($redis) {
+                    $redis->expire(self::REPLY_LOCK_PREFIX . $msgId, self::REPLY_LOCK_TTL);
 
-                //背压：待处理任务数超上限直接放弃，AI 不排队堆积（超限降级）
-                $queueKey = (string)config('queue.connections.redis.queue', 'CRMEB');
-                $limit = (int)sys_config('ai_service_queue_limit', 50);
-                $pending = (int)$redis->lLen($queueKey);
-                if ($pending > $limit) {
+                    //背压：待处理任务数超上限直接放弃，AI 不排队堆积（超限降级）
+                    //键名与 think-queue redis 驱动一致：queues:{queue}（Redis.php getQueue）
+                    $queueKey = 'queues:' . (string)config('queue.connections.redis.queue', 'CRMEB');
+                    $limit = (int)sys_config('ai_service_queue_limit', 50);
+                    $pending = (int)$redis->lLen($queueKey);
+                    if ($pending > $limit) {
                     Log::warning('[ai] dispatch_backpressure ' . json_encode([
                         'pending'   => $pending,
                         'limit'     => $limit,
                         'msg_id'    => $msgId,
                     ], JSON_UNESCAPED_UNICODE));
+                    //埋点：派发被背压拒绝，消息未入队（job 侧不会有记录）
+                    AiCallLog::record([
+                        'msg_id'   => $msgId,
+                        'uid'      => (int)$msg['uid'],
+                        'kefu_uid' => (int)$msg['to_uid'],
+                        'event'    => 'dispatch_backpressure',
+                        'outcome'  => AiCallLog::OUTCOME_REJECTED,
+                        'error'    => 'pending:' . $pending . '>limit:' . $limit,
+                    ]);
                     return false;
                 }
             }
@@ -108,6 +119,14 @@ class AiChatService
                 'msg_id' => (int)($msg['id'] ?? 0),
                 'error'  => $e->getMessage(),
             ], JSON_UNESCAPED_UNICODE));
+            AiCallLog::record([
+                'msg_id'   => (int)($msg['id'] ?? 0),
+                'uid'      => (int)($msg['uid'] ?? 0),
+                'kefu_uid' => (int)($msg['to_uid'] ?? 0),
+                'event'    => 'dispatch_error',
+                'outcome'  => AiCallLog::OUTCOME_ERROR,
+                'error'    => $e->getMessage(),
+            ]);
             return false;
         }
     }

@@ -2,7 +2,7 @@
 
 > **状态**：✅ 方案已批准（2026-10-01），执行中
 > **定位**：主打 **AI 系统工程能力**——在成熟电商系统上落地 AI 能力的异步架构、降级容错与可观测性实践
-> 最后更新：2026-10-25（窗口 3 完成）
+> 最后更新：2026-10-25（窗口 4 完成）
 
 ## 一、项目定位
 
@@ -404,4 +404,120 @@ PY   ai-service  ai.chat chat_completed  {"trace_id":"ai-496e9e290e9b9a49",
 - 首次 `/api/kb/sync` 在 KB 重置后中断（未完成），重试成功——窗口 4 可观测性上线后关注此路径。
 - **密钥安全**：key 仅存 `ai-service/.env`（`ai-service/.gitignore:9` 忽略，提交前已 grep 全仓库确认无任何 key 片段入库）。曾评估 DeepSeek 官方 key（无 embeddings 端点，需拆分 provider）未采用，相关本地记录已核查清除（工作区文件 / git 全部历史 / shell 历史 / 会话临时文件四处均无）。
 - 选型说明：SiliconFlow 一个 key 同时提供 chat（含 DeepSeek 系列模型，选用 V4.1-Flash）与 bge-m3 embedding，维持单 provider 架构零代码改动；DeepSeek 官方 V4.1 若未来要用，需 ~20 行拆分改造（chat 走官方 + embedding 留 SiliconFlow）。
+
+## 十三、窗口 4 执行记录（可观测与量化，2026-10-25 完成）
+
+### 13.1 双轨可观测架构（全部真实运行）
+
+```
+轨道一（业务内）：
+  AiChatService/AiChatJob 终态 ──写──▶ eb_ai_call_log（埋点表，每条消息至多一行）
+      ├─▶ adminapi /ai/monitor/*（summary/trend/list/trace/health）
+      │      └─▶ admin「AI 运行监控」页（/admin/setting/ai_monitor，设置分组下）
+      └─▶ exporter(:9877, 容器) ──增量读表──▶ ai_php_* 指标
+轨道二（标准栈）：
+  ai-service 进程内 prometheus_client ──▶ :8000/metrics（ai_http/llm/rag/breaker/backpressure/idempotency）
+  exporter（pymysql 只读 + redis LLEN）──▶ :9877/metrics（ai_php_*）
+        两路 ──▶ Prometheus(:9090, compose) ──▶ Grafana(:30011, compose)
+                  数据源+dashboard provisioning 自动注入，匿名只读开启
+```
+
+### 13.2 埋点设计（eb_ai_call_log）
+
+- 事件 event：派发侧 `dispatch_backpressure`（LLEN>50 拒绝入队）/`dispatch_error`；任务侧 8 个终态 `reply_sent`/`silent_degrade`/`fallback_sent`/`upstream_failed`/`bad_envelope`/`empty_reply`/`deadline_blown`/`job_error`
+- 归一化 outcome（页面/图表聚合轴）：`success`（含软降级，degraded=1 区分）/`silent`（用户零感知）/`notify`（发了降级话术）/`rejected`（背压拒绝）/`error`（异常）
+- 每行携带：trace_id、http_status/attempts、耗时三元组（http_ms/ai_ms/total_ms，成功应答才有 ai_ms）、kb_used/degraded/reason、prompt/completion_tokens、error 摘要
+- 落表契约：写表异常仅记日志绝不影响主链路（AiCallLog::record 吞异常）；AiChatJob 每条消息恰好至多一行（各终态单点写入）
+
+### 13.3 后台监控页（admin 前端新增，唯一改前端构建链的一处）
+
+页面 `pages/setting/aiMonitor/index.vue`（Vue2 + echarts 4.8），路由挂在 `router/modules/setting.js`（`/admin/setting/ai_monitor`，meta.auth=`admin-setting-ai_monitor`），菜单纯 DB 数据（`eb_system_menus` pid=12，menu_path 存储不含 /admin 前缀——后端 `SystemMenusServices:55` 返回时统一拼接，这是菜单机制的关键约定）。内容：
+
+- 健康徽标（透传 ai-service /api/health：provider/模型/KB 文档数/并发与队列/熔断状态，30s 轮询）
+- 8 张 KPI 卡：总调用量/成功率/P95/KB 命中率/静默放弃/降级话术/背压拒绝/重试次数
+- 三图：小时趋势（分结果堆叠柱+平均耗时折线）、结果分布环形图、降级原因横向条形
+- 延迟分解表（total/http/ai 三阶段的 P50/P90/P95/P99/avg/max）+ token 消耗
+- 明细表（事件/结果 tag/耗时/尝试/KB/reason/token/错误）+ trace_id 链路弹窗（成对的用户消息原文与 AI 回复原文）
+
+构建部署：便携 Node 20.19.0 + `NODE_OPTIONS=--openssl-legacy-provider` 构建，产物 600 文件/41MB（上游 596），覆盖 `template/admin/dist` → 同步为 `crmeb/public/admin`（仓库内管理）→ `docker cp` 进容器；`/admin/`、新 app.js（1.49MB）、SPA 路由直达全部 200。浏览器实测：菜单中文高亮正确、KPI/图表/延迟分解全部真实数据渲染。
+
+### 13.4 指标 exporter（ai-service/exporter.py，compose 服务 ai-exporter）
+
+- **增量游标模式**：内存记录 ai_call_log 最大 id，每次抓取只 observe `id > cursor` 的新增行；进程重启从当前 max(id) 起步不回灌历史（counter 语义在进程生命周期内成立）
+- 指标：`ai_php_calls_total{event,outcome}`、`ai_php_outcome_total`、`ai_php_degraded_total{reason}`、`ai_php_total_ms/_http_ms`（histogram，仅 success 样本）、`ai_php_tokens_total{direction}`、`ai_php_kb_used_total`、`ai_php_queue_depth`（redis LLEN 队列积压）、`ai_php_exporter_last_id`
+- 只读契约：一个 SELECT + 一个 LLEN；连接 MySQL/Redis 全用容器网络内名（crmeb_mysql/crmeb_redis）
+
+### 13.5 本窗口踩的四个坑（均已修复并验证）
+
+1. **SQL 导入字符集**：`docker exec -i mysql < ai_monitor.sql` 未加 `--default-character-set=utf8mb4`，中文菜单名被 latin1 双重编码成乱码。修复：UPDATE 修正数据 + SQL 文件头注明导入命令。
+2. **pymysql 长连接看不到新行**：默认 `autocommit=False`，第一条 SELECT 开启 REPEATABLE READ 快照后，同一连接永远读不到其他进程新写入的行（exporter last_id 停滞的根因）。修复：`conn.autocommit(True)`。
+3. **PHP 背压检查查错键（窗口3遗留 bug，被本窗口压测暴露）**：think-queue redis 驱动的真实队列键是 `queues:{queue}`（`Redis.php getQueue`），窗口3的 AiChatService 背压检查用的是无前缀键——LLEN 恒 0，背压从未真正生效（窗口3只验证了代码路径未实测触发）。修复后重跑压测：背压精确生效（见 13.7）。
+4. **Docker Hub 直连超时**：`registry-1.docker.io` 连接失败；镜像源可用性实测 `docker.1panel.live` 与 `hub.rat.dev` 可达（daocloud 不通）。prom/grafana 镜像经镜像源拉取后 `docker tag` 还原命名。
+
+### 13.6 ai-service 直压量化（locust，fake provider 零成本确定性）
+
+| 场景 | 并发 | 结果 |
+|---|---|---|
+| 吞吐上限（FAKE_LATENCY_MS=0，RAG 全链路） | 20 | **92.7 RPS**，5511 请求 0 失败，P50=180ms / P95=300ms / P99=400ms，max 728ms |
+| 容量内（FAKE_LATENCY_MS=2500，8+32=40 容量） | 30 | **0 拒绝**，全部排队消化，P50=6s / P90=12s / P99=20s（排队延迟线性增长） |
+| 边界外 | 45 | 秒级 503 拒绝（Min=1ms），拒绝率 79% |
+| 边界外 | 60 | **99.7% 秒级拒绝**（313/314，`ai_queue_rejected_total` 精确计数），成功请求 P50=6s |
+
+结论：背压设计的两个目标均量化成立——容量内排队不拒绝（SLA 内消化），容量外**立即拒绝不堆积**（1ms 级返回而非 20s 超时）。
+
+### 13.7 全链路压测（PHP→队列→ai-service→落库推送，help/dev/ai-load-e2e.mjs）
+
+设置：ai_service_url 切慢速 fake（:8010, FAKE_LATENCY_MS=2500），300 条消息 @10/s 突发（消费能力 0.4/s），结束后还原配置。
+
+| 观测 | 数值 |
+|---|---|
+| redis 队列深度 | **峰值 51 = 阈值 50 + 正在处理的 1 条**，均值 37.2，背压生效后队列被钉住不再上涨 |
+| 派发背压拒绝 | **133 条（44.3%）**，outcome=rejected，全部毫秒级放弃，用户零感知 |
+| 入队消息终态 | 117 deadline_blown（SLA 耗尽静默放弃）+ 32 llm_timeout（ai-service 内 deadline 耗尽）+ 14 upstream_failed + 4 success |
+| 总账 | **300/300 全部有终态记录**，无一条消息失踪；原聊天通路全程零影响 |
+
+### 13.8 故障演练量化（drill_breaker.py，真实 HTTP）
+
+| 阶段 | 行为 | 量化证据 |
+|---|---|---|
+| 连失触发（FAIL_MODE=5xx） | 前 5 次 `llm_unavailable`（每次真实打到上游），第 5 次熔断开启 | health: state=open, consecutive_failures=5, trips=1 |
+| open 期间 | 后续 7 次全部 `circuit_open` **秒级拒绝（0–15ms，不再打上游）** | 同上时序表 |
+| half_open 探测·故障保持 | 30s 重置窗口后首次探测真实打到上游失败（16ms）→ **重新 open，trips=2**（不盲目恢复） | health: opened_seconds_ago 重置为 0 |
+| half_open 探测·故障解除 | 探测成功 → **state=closed**，恢复正常应答 | health: consecutive_failures=0 |
+
+### 13.9 Prometheus/Grafana（compose 三服务 + provisioning）
+
+- compose 新增：`prometheus`（:9090，host-gateway 抓宿主机 ai-service:8000，7d 保留）、`grafana`（:30011，admin/admin123 + 匿名 Viewer）、`ai-exporter`（:9877，python:3.12-alpine 启动时 pip 装依赖）
+- 抓取 target 全部 up：`ai-service`（进程内指标）+ `ai-php-exporter`（PHP 链路指标）
+- Grafana provisioning：数据源 uid=prometheus + dashboard JSON（`help/docker/grafana/dashboards/ai-overview.json`，12 面板：吞吐/延迟分位/LLM 结果/token、PHP 结果速率/延迟/队列积压、熔断状态/降级原因/背压拒绝/RAG 命中与重试率）
+
+### 13.10 本窗口新增/修改的文件
+
+| 文件 | 行数 | 作用 |
+|---|---|---|
+| `crmeb/app/services/ai/AiCallLog.php`（新） | 76 | 埋点写入（吞异常，不伤主链路） |
+| `crmeb/app/jobs/AiChatJob.php`（改） | +30 | 各终态写 ai_call_log（含 tokens 提取） |
+| `crmeb/app/services/ai/AiChatService.php`（改） | +22 | 派发拒绝/异常埋点；**修复背压键名缺失 queues: 前缀的 bug** |
+| `crmeb/crmeb/services/ai/AiClient.php`（改） | +41 | 新增 getJson（health 探针） |
+| `crmeb/app/adminapi/controller/v1/ai/Monitor.php`（新） | 235 | summary/trend/list/trace/health 五接口（分位数 PHP 侧计算） |
+| `crmeb/app/adminapi/route/ai.php`（新） | 31 | ai 分组路由（标准 admin 中间件栈） |
+| `crmeb/public/admin/`（重建） | 600 文件 | 新增监控页的构建产物 |
+| `template/admin/src/pages/setting/aiMonitor/index.vue`（新） | 560 | 监控页（KPI/三图/延迟分解/明细/trace 弹窗/健康徽标） |
+| `template/admin/src/api/ai.js`（新） | 55 | 五个监控 API |
+| `template/admin/src/router/modules/setting.js`（改） | +9 | 路由注册 |
+| `help/sql/ai_monitor.sql`（新） | 47 | ai_call_log 表 + 菜单行（幂等，注明 utf8mb4 导入） |
+| `ai-service/exporter.py`（新） | 200 | PHP 链路指标 exporter（增量游标） |
+| `ai-service/locustfile.py`（新） | 55 | 直压场景（503 记为有效观测点） |
+| `ai-service/drill_breaker.py`（新） | 90 | 熔断演练（fail/recover 两阶段） |
+| `help/dev/ai-load-e2e.mjs`（新） | 175 | 全链路压测（配置翻转/队列深度采样/终态统计/自动还原） |
+| `help/docker/docker-compose.yml`（改） | +55 | prometheus/grafana/ai-exporter 三服务 |
+| `help/docker/prometheus/prometheus.yml`（新） | 22 | 抓取配置 |
+| `help/docker/grafana/provisioning/**`（新） | 20 | 数据源 + dashboard provider |
+| `help/docker/grafana/dashboards/ai-overview.json`（新） | 280 | 12 面板总览看板 |
+
+### 13.11 移交窗口 5 的事项
+
+1. 后台 AI 文案（adminapi 接口 + admin 商品编辑页按钮）：复用 `/api/copywriting`（ai-service 已实现，走同一套 breaker/backpressure/trace）；监控页旁边可加文案生成入口
+2. Grafana dashboard 截图进 README；`crmeb/public/admin` 已是含监控页的产物，窗口5改文案按钮后需再次构建覆盖
+3. 压测结果 CSV 在 `ai-service/results/`（throughput/backpressure60），README 性能表直接引用 13.6/13.7 数字
 

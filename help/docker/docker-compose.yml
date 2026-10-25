@@ -83,6 +83,72 @@ services:
     networks:
       app_net:
         ipv4_address: 192.168.10.80
+  # AI PHP 链路指标 exporter（窗口4）
+  # 读 eb_ai_call_log 增量（pymysql 只读）+ redis 队列深度，暴露 :9877/metrics
+  ai-exporter:
+    container_name: crmeb_ai_exporter
+    image: python:3.12-alpine
+    restart: always
+    command: >
+      sh -c "pip install --no-cache-dir -q -i https://pypi.tuna.tsinghua.edu.cn/simple
+      pymysql redis prometheus-client && python /app/exporter.py"
+    environment:
+      MYSQL_HOST: crmeb_mysql
+      MYSQL_PORT: "3306"
+      MYSQL_USER: crmeb
+      MYSQL_PASSWORD: 123456
+      MYSQL_DATABASE: crmeb
+      REDIS_HOST: crmeb_redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: 123456
+      QUEUE_KEY: CRMEB6ad6fadaa57bf
+    ports:
+      - "9877:9877"
+    volumes:
+      - ../../ai-service/exporter.py:/app/exporter.py:ro
+    networks:
+      app_net:
+        ipv4_address: 192.168.10.91
+  # Prometheus（窗口4 轨道二）
+  prometheus:
+    container_name: crmeb_prometheus
+    image: prom/prometheus:v2.53.0
+    restart: always
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      app_net:
+        ipv4_address: 192.168.10.92
+  # Grafana（窗口4 轨道二：看板自动注入，匿名只读方便演示）
+  grafana:
+    container_name: crmeb_grafana
+    image: grafana/grafana:11.1.0
+    restart: always
+    ports:
+      - "30011:3000"
+    environment:
+      TZ: Asia/Shanghai
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      app_net:
+        ipv4_address: 192.168.10.93
 networks:
   app_net:
     driver: bridge
@@ -95,3 +161,5 @@ volumes:
   # 应用代码卷：位于 Docker Desktop 的 WSL2 VM（ext4），避免 Windows 9p 挂载性能悬崖。
   # 首次使用请执行 bash help/docker/sync.sh 将 ../../crmeb 同步进来。
   crmeb_app:
+  prometheus_data:
+  grafana_data:

@@ -28,6 +28,44 @@ class AiClient
     const RETRYABLE_ERRNO = [6, 7];
 
     /**
+     * GET JSON（健康检查等只读探针；单次尝试不重试，探针失败如实上报）
+     *
+     * @param string $url 完整地址
+     * @param string $traceId 链路 id（可空）
+     * @param int $connectTimeout 连接超时秒数
+     * @param int $timeout 读取超时秒数
+     * @return array{ok:bool,status:int,body:string,error:string,duration_ms:float}
+     */
+    public function getJson(string $url, string $traceId = '', int $connectTimeout = 1, int $timeout = 3): array
+    {
+        $started = microtime(true);
+        $ch = curl_init($url);
+        $headers = ['Accept: application/json'];
+        if ($traceId !== '') {
+            $headers[] = 'X-Trace-Id: ' . $traceId;
+        }
+        curl_setopt_array($ch, [
+            CURLOPT_HTTPHEADER     => $headers,
+            CURLOPT_CONNECTTIMEOUT => $connectTimeout,
+            CURLOPT_TIMEOUT        => $timeout,
+            CURLOPT_RETURNTRANSFER => true,
+        ]);
+        $body = curl_exec($ch);
+        $errno = curl_errno($ch);
+        $error = curl_error($ch);
+        $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        curl_close($ch);
+        $ok = $errno === 0 && $status >= 200 && $status < 300;
+        return [
+            'ok'          => $ok,
+            'status'      => $status,
+            'body'        => ($body === false || $body === null) ? '' : (string)$body,
+            'error'       => $ok ? '' : ($errno !== 0 ? sprintf('curl(%d): %s', $errno, $error) : sprintf('http_status:%d', $status)),
+            'duration_ms' => round((microtime(true) - $started) * 1000, 1),
+        ];
+    }
+
+    /**
      * POST JSON（当前仅 /api/chat 使用）
      *
      * @param string $url 完整地址，如 http://host.docker.internal:8000/api/chat

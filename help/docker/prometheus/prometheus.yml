@@ -1,0 +1,18 @@
+# AI 链路 Prometheus 抓取配置（crmeb-ai-mall 窗口4）
+global:
+  scrape_interval: 5s
+  evaluation_interval: 30s
+
+scrape_configs:
+  # 轨道二·ai-service 进程内指标（HTTP/LLM/RAG/熔断/背压/幂等）
+  # ai-service 在宿主机 uvicorn 运行（:8000），经 host-gateway 访问
+  - job_name: ai-service
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8000"]
+
+  # 轨道二·PHP 链路指标（exporter 读 eb_ai_call_log 增量 + redis 队列深度）
+  - job_name: ai-php-exporter
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["ai-exporter:9877"]

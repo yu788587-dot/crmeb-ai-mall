@@ -334,6 +334,15 @@ export default {
       component: () => import('@/pages/setting/storeService/index'),
     },
     {
+      path: 'ai_monitor',
+      name: `${pre}aiMonitor`,
+      meta: {
+        auth: ['admin-setting-ai_monitor'],
+        title: 'AI运行监控',
+      },
+      component: () => import('@/pages/setting/aiMonitor/index'),
+    },
+    {
       path: 'freight/city/list',
       name: `${pre}dada`,
       meta: {

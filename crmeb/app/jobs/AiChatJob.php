@@ -11,6 +11,7 @@
 
 namespace app\jobs;
 
+use app\services\ai\AiCallLog;
 use app\services\kefu\service\StoreServiceLogServices;
 use app\services\kefu\service\StoreServiceRecordServices;
 use app\services\kefu\service\StoreServiceServices;
@@ -60,6 +61,8 @@ class AiChatJob extends BaseJobs
     {
         $startedAt = microtime(true);
         $ctx = ['trace_id' => $traceId, 'msg_id' => $msgId, 'uid' => $uid, 'kefu_uid' => $kefuUid];
+        //埋点基座：终态时以本数组落 ai_call_log（每条消息至多一行）
+        $callLog = ['trace_id' => $traceId, 'msg_id' => $msgId, 'uid' => $uid, 'kefu_uid' => $kefuUid];
         try {
             //开关可能在入队后被关掉，执行时再校验一次
             if (sys_config('ai_service_open', 0) != 1) {
@@ -75,6 +78,8 @@ class AiChatJob extends BaseJobs
             $deadlineMs = $slaMs - max(0, time() - $addTime) * 1000;
             if ($deadlineMs < 2000) {
                 Log::warning('[ai] deadline_blown ' . json_encode($ctx + ['deadline_ms' => $deadlineMs], JSON_UNESCAPED_UNICODE));
+                AiCallLog::record($callLog + ['event' => 'deadline_blown', 'outcome' => AiCallLog::OUTCOME_SILENT,
+                    'total_ms' => (microtime(true) - $startedAt) * 1000, 'error' => 'deadline_ms:' . round($deadlineMs)]);
                 return true;
             }
 
@@ -91,6 +96,7 @@ class AiChatJob extends BaseJobs
             $base = rtrim((string)sys_config('ai_service_url', 'http://host.docker.internal:8000'), '/');
             $resp = (new AiClient())->postJson($base . '/api/chat', $payload, $traceId, 1, 15, $deadlineMs);
             $ctx['http'] = ['status' => $resp['status'], 'attempts' => $resp['attempts'], 'duration_ms' => $resp['duration_ms']];
+            $callLog += ['http_status' => $resp['status'], 'attempts' => $resp['attempts'], 'http_ms' => $resp['duration_ms']];
 
             if (!$resp['ok']) {
                 $ctx['error'] = $resp['error'];
@@ -98,6 +104,8 @@ class AiChatJob extends BaseJobs
                 //传输层失败（连不上/超时/非5xx的4xx等）与 ai-service 应答降级同样对待：
                 //默认静默；开启 ai_service_notify_on_failure 后发送配置话术
                 if (sys_config('ai_service_notify_on_failure', 0) != 1) {
+                    AiCallLog::record($callLog + ['event' => 'upstream_failed', 'outcome' => AiCallLog::OUTCOME_SILENT,
+                        'error' => (string)$resp['error']]);
                     return true;
                 }
                 $this->saveAndPushReply(
@@ -106,6 +114,8 @@ class AiChatJob extends BaseJobs
                 );
                 $ctx['total_ms'] = round((microtime(true) - $startedAt) * 1000, 1);
                 Log::info('[ai] fallback_sent ' . json_encode($ctx, JSON_UNESCAPED_UNICODE));
+                AiCallLog::record($callLog + ['event' => 'fallback_sent', 'outcome' => AiCallLog::OUTCOME_NOTIFY,
+                    'total_ms' => $ctx['total_ms'], 'error' => (string)$resp['error']]);
                 return true;
             }
 
@@ -114,6 +124,8 @@ class AiChatJob extends BaseJobs
                 || !isset($envelope['data']['reply'])) {
                 $ctx['error'] = 'bad_envelope';
                 Log::warning('[ai] bad_envelope ' . json_encode($ctx, JSON_UNESCAPED_UNICODE));
+                AiCallLog::record($callLog + ['event' => 'bad_envelope', 'outcome' => AiCallLog::OUTCOME_SILENT,
+                    'total_ms' => (microtime(true) - $startedAt) * 1000, 'error' => 'bad_envelope']);
                 return true;
             }
             $data = $envelope['data'];
@@ -122,11 +134,22 @@ class AiChatJob extends BaseJobs
                 'reason'     => (string)($data['reason'] ?? ''),
                 'kb_used'    => !empty($data['kb_used']),
                 'ai_latency' => $envelope['latency_ms'] ?? null,
+                'tokens'     => $data['tokens'] ?? [],
+            ];
+            $callLog += [
+                'ai_ms'             => (float)($envelope['latency_ms'] ?? 0),
+                'kb_used'           => !empty($data['kb_used']),
+                'degraded'          => !empty($data['degraded']),
+                'reason'            => (string)($data['reason'] ?? ''),
+                'prompt_tokens'     => (int)($data['tokens']['prompt'] ?? 0),
+                'completion_tokens' => (int)($data['tokens']['completion'] ?? 0),
             ];
 
             $reply = trim((string)$data['reply']);
             if ($reply === '') {
                 Log::warning('[ai] empty_reply ' . json_encode($ctx, JSON_UNESCAPED_UNICODE));
+                AiCallLog::record($callLog + ['event' => 'empty_reply', 'outcome' => AiCallLog::OUTCOME_SILENT,
+                    'total_ms' => (microtime(true) - $startedAt) * 1000]);
                 return true;
             }
 
@@ -136,6 +159,8 @@ class AiChatJob extends BaseJobs
                     if (sys_config('ai_service_notify_on_failure', 0) != 1) {
                         //硬故障静默降级：不发消息，用户侧零感知
                         Log::warning('[ai] silent_degrade ' . json_encode($ctx, JSON_UNESCAPED_UNICODE));
+                        AiCallLog::record($callLog + ['event' => 'silent_degrade', 'outcome' => AiCallLog::OUTCOME_SILENT,
+                            'total_ms' => (microtime(true) - $startedAt) * 1000]);
                         return true;
                     }
                     $reply = (string)sys_config('ai_service_fallback_text', '抱歉，智能客服暂时无法回复，请稍后再试或联系人工客服。');
@@ -146,10 +171,14 @@ class AiChatJob extends BaseJobs
             $this->saveAndPushReply($reply, $uid, $kefuUid, $formType);
             $ctx['total_ms'] = round((microtime(true) - $startedAt) * 1000, 1);
             Log::info('[ai] reply_sent ' . json_encode($ctx, JSON_UNESCAPED_UNICODE));
+            AiCallLog::record($callLog + ['event' => 'reply_sent', 'outcome' => AiCallLog::OUTCOME_SUCCESS,
+                'total_ms' => $ctx['total_ms']]);
             return true;
         } catch (\Throwable $e) {
             $ctx['error'] = $e->getMessage();
             Log::error('[ai] job_error ' . json_encode($ctx, JSON_UNESCAPED_UNICODE));
+            AiCallLog::record($callLog + ['event' => 'job_error', 'outcome' => AiCallLog::OUTCOME_ERROR,
+                'total_ms' => (microtime(true) - $startedAt) * 1000, 'error' => $e->getMessage()]);
             return true;
         }
     }
