@@ -81,3 +81,6 @@ Dockerfile
 
 # 多窗口执行锁文件（本地会话运行时产物）
 help/dev/.window-run.lock
+# 本地网络辅助与发布操作产物（机器相关，非项目代码）
+help/dev/gh-bridge-v2.py
+help/dev/release-v1.0.0.json
