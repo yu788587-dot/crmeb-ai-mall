@@ -56,6 +56,12 @@
 - **业务内**：`ai_call_log` 埋点表（每条消息至多一行、10 类终态）→ 后台「AI 运行监控」页（KPI 卡/趋势图/延迟分位分解/明细/trace 弹窗/健康徽标）
 - **标准栈**：Prometheus + Grafana（数据源与 12 面板看板自动 provisioning，匿名只读），PHP 侧指标由增量游标 exporter 暴露
 
+**后台「AI 运行监控」页**（左：常态——健康徽标透传 ai-service 探针，KPI 为真实 API 冒烟数据；右：全链路压测后——925 次调用、背压拒绝 272、静默放弃 617 全部量化可见）：
+
+| 常态：健康徽标 + KPI + 趋势 | 压测后：背压拒绝/静默放弃量化 |
+|:---:|:---:|
+| ![AI 运行监控页](docs/screenshots/admin-ai-monitor-initial.png) | ![AI 运行监控页·压测后](docs/screenshots/admin-ai-monitor-after-load.png) |
+
 ## 架构
 
 ```
@@ -106,6 +112,12 @@
 | redis 队列深度 | 峰值 **51 = 阈值 50 + 在处理 1 条**，背压生效后被钉住不再上涨 |
 | 派发背压拒绝 | 133 条（44.3%），全部毫秒级放弃，用户零感知 |
 | 总账 | **300/300 全部有终态记录**（拒绝/deadline 耗尽/上游失败/成功），无一条失踪，原聊天通路零影响 |
+
+**Grafana 看板实测**（双数据源自动 provisioning）：左——PHP 链路调用结果率，压测时段 `rejected`/`silent` 尖峰与上表总账互相印证；右——ai-service HTTP QPS 按端点分解：
+
+| AI 调用结果率（PHP 链路） | HTTP QPS（按端点） |
+|:---:|:---:|
+| ![Grafana AI 调用结果率](docs/screenshots/grafana-php-outcome-rate.png) | ![Grafana HTTP QPS](docs/screenshots/grafana-http-qps.png) |
 
 ### 真实 API 冒烟（SiliconFlow DeepSeek-V4.1-Flash + bge-m3）
 

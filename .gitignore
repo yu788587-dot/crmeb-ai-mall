@@ -78,3 +78,6 @@ Dockerfile
 !ai-service/Dockerfile
 .codebuddy/models.json
 .codebuddy/rules/project-intro.mdc
+
+# 多窗口执行锁文件（本地会话运行时产物）
+help/dev/.window-run.lock

@@ -1,8 +1,8 @@
 # AI 增强二开方案与进度（CRMEB v6.0.0 → crmeb-ai-mall）
 
-> **状态**：✅ 方案已批准（2026-10-01），执行中
+> **状态**：✅ 六个窗口全部完成（2026-10-26），v1.0.0 已发布
 > **定位**：主打 **AI 系统工程能力**——在成熟电商系统上落地 AI 能力的异步架构、降级容错与可观测性实践
-> 最后更新：2026-10-26（窗口 5 完成）
+> 最后更新：2026-10-26（窗口 6 完成，项目收官）
 
 ## 一、项目定位
 
@@ -67,9 +67,9 @@ Grafana ◀── Prometheus ◀── ai-service:/metrics ＋ PHP指标exporter
 | 1 环境与基线 | git init 两段提交 → 启动 Docker → compose 全栈（nginx:8011/mysql:33061/redis:63791）→ 安装 CRMEB → admin/H5 登录 → 基线聊天可用 → **预验证 admin 前端构建链（便携 Node 20）** → 集成机制细节确认 → AI 关闭时原版行为基线 | ✅ 完成，见第十节（含 9p 性能悬崖修复 60s→10ms、E2E 聊天与自动回复基线、admin 构建链与产物 96.6% 字节一致，见 10.7） |
 | 2 AI 微服务 | FastAPI + RAG + 知识库同步 + **trace_id 契约 / 结构化日志 / /metrics / health** | ✅ 代码已提交 f665fcb7，pytest 28 passed，fake 冒烟通过；真实 API 冒烟移至窗口 3（需用户填 key） |
 | 3 集成与可靠性 | ChatHandle 挂接 + AI Worker + 七项可靠性标准 + 后台开关 | ✅ 完成，见第十二节（E2E 五场景全绿 + 故障注入矩阵 + trace_id 双端实证） |
-| 4 可观测与量化 | ai_call_log + 后台监控页 + Prometheus/Grafana + exporter + locust 压测 + 故障演练 | 数字、图表与截图产出 |
+| 4 可观测与量化 | ai_call_log + 后台监控页 + Prometheus/Grafana + exporter + locust 压测 + 故障演练 | ✅ 完成，见第十三节（量化数据 + 5 张截图入库 `docs/screenshots/`） |
 | 5 后台 AI 文案 | adminapi 接口 + admin 前端按钮 + 构建（轻量，工期紧可砍） | ✅ 完成，见第十四节（真实环境生成并应用，trace + 落库双证据） |
-| 6 文档与开源 | README 重写（架构/时序/性能表/演练GIF）+ docs + compose 一键部署（含 ai-service/Prometheus/Grafana）+ push + Release v1.0.0 | 开源发布 |
+| 6 文档与开源 | README 重写（架构/时序/性能表/演练GIF）+ docs + compose 一键部署（含 ai-service/Prometheus/Grafana）+ push + Release v1.0.0 | ✅ 完成，见第十五节（README + 截图嵌入 + 容器化 + 密钥核查 + 发布） |
 
 ## 七、关键技术坐标（已核实）
 
@@ -578,3 +578,51 @@ admin 商品编辑页（4 个「AI 生成」入口）
 1. README 性能表直接引用 13.6/13.7 数字；架构图补上第二用例（后台文案与客服共用链路）
 2. `crmeb/public/admin` 已是含监控页+文案按钮的最终产物（600 文件）；`template/admin/dist` 与 `ai-service-run.log` 均 gitignored
 3. ai-service 当前以 `.venv` python 运行（0.0.0.0:8000，uvicorn），compose 的 ai-exporter/prometheus/grafana 三服务已在跑（窗口4）
+
+## 十五、窗口 6 执行记录（文档与开源，2026-10-26 完成）
+
+### 15.1 交付内容
+
+**ai-service 容器化（纳入 compose 一键部署）**：
+
+- `ai-service/Dockerfile`：python:3.12-slim，构建可换 pip 源（`--build-arg PIP_INDEX_URL`）；配置经 compose `env_file` 注入进程环境——**真实 key 只存在于宿主 `ai-service/.env`，不进镜像、不进仓库**
+- compose 新增 `ai` 服务（crmeb_ai, :8000）：`MYSQL_*` 环境变量覆盖 .env 的宿主机端口指向 compose 内网（crmeb_mysql:3306）；Chroma 向量库持久化在命名卷 `ai_chroma`（ext4，避 9p），首次启动后 `POST /api/kb/sync` 从 MySQL 灌库；换 embedding 模型需重灌
+
+**README 重写 + 截图**：
+
+- README 全面重写（387 行改动）：声明与致谢（Apache-2.0 §4b 合规：保留版权头/LICENSE/品牌标识，修改以 git 历史 + 本文档体现）、能力矩阵、架构图、七项可靠性标准实证表、量化结果（13.6/13.7 数字 + 真实冒烟 + E2E 矩阵 + 9p 修复）、一键部署 6 步、本地演示账号、二开改动总览
+- 5 张运行截图入库 `docs/screenshots/` 并嵌入 README：监控页常态（健康徽标 + KPI）/监控页压测后（925 调用、背压拒绝 272、静默放弃 617）/Grafana 调用结果率与 HTTP QPS——截图发布前逐一核查无密钥等敏感信息
+- `docs/README.md` 文档索引（主文档 + 截图 + E2E/演练脚本说明）；locust 压测原始 CSV 归档 `ai-service/results/`（8 个文件，README 性能表的可复核数据源）
+
+**窗口 4/5 尾巴在本窗口期收编**（提交先于本记录）：
+
+| 提交 | 内容 |
+|---|---|
+| abed2e3d | exporter 队列键补 `queues:` 前缀（同 13.5 第 3 条 PHP 背压修复，exporter 的 `ai_php_queue_depth` 此前恒 0） |
+| 758ed006 | E2E failure/notify 场景自包含停机（切死 :8010 慢速 fake 端口替代人工停 uvicorn，开源后可一键复放） |
+| 97c24e28 | 补记窗口 5 执行记录（含 docker 重启后 workerman 僵死 master 的发现与处置，见 14.3 第 5 条） |
+
+### 15.2 密钥安全核查（发布前，逐项通过）
+
+1. **.env 不入库**：`ai-service/.gitignore`（`.env`）+ 根 `.gitignore`（`crmeb/.env`）双保险；`git ls-files` 确认 `ai-service/.env` 与 `crmeb/.env` 均未被跟踪，入库的只有 `.env.example` 模板
+2. **git 全历史扫描**：对上游快照之后的全部改动补丁扫描密钥特征——真实 key 全历史零命中；`sk-` 通用模式唯一命中为 `.env.example` 的 `sk-xxxx…` 占位符（非密钥）。核查只输出计数/文件名，不回显内容；另确认被忽略的本地文件中真实 key 仅存在于 `ai-service/.env`
+3. **截图核查**：5 张截图经视觉检查确认无 API key/token 等敏感信息
+4. **镜像核查**：Dockerfile 不 COPY .env；compose 经 env_file 注入，key 不进镜像层
+
+### 15.3 发布
+
+- 推送 `main` 至 GitHub（yu788587-dot/crmeb-ai-mall），打 tag `v1.0.0` 并发布 Release（含能力摘要与部署指引）
+- 发布物自检：compose 一键部署路径可用（fake 模式无 key 可跑）、SQL 幂等可重放、E2E/演练脚本自包含
+
+### 15.4 本窗口新增/修改的文件
+
+| 文件 | 作用 |
+|---|---|
+| `ai-service/Dockerfile`（新） | AI 微服务镜像（key 不进镜像） |
+| `ai-service/.dockerignore`（新） | 构建上下文瘦身 |
+| `help/docker/docker-compose.yml`（改） | +`ai` 服务与 `ai_chroma` 卷（全栈 7 服务 + exporter） |
+| `README.md`（重写） | 开源门面：合规声明/能力/架构/量化/部署 |
+| `docs/README.md`（新） | 文档索引 |
+| `docs/screenshots/*.png`（新 5 张） | README 嵌入的运行截图 |
+| `ai-service/results/*.csv`（新 8 个） | locust 压测原始数据 |
+| `.gitignore`（改） | 忽略窗口执行锁文件 `help/dev/.window-run.lock` |
